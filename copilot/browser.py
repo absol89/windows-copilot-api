@@ -191,8 +191,11 @@ class BrowserCopilot:
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
             self._page.set_default_timeout(self.nav_timeout * 1000)
             self._page.goto(COPILOT_URL, wait_until="domcontentloaded")
-            # Give Cloudflare a moment to clear on first paint.
-            self._page.wait_for_load_state("networkidle", timeout=self.nav_timeout * 1000)
+            # Do not wait for Playwright's `networkidle` state here. Copilot is a
+            # long-lived SPA with background requests, telemetry and WebSockets,
+            # so a page can be fully usable while never becoming network-idle.
+            # `goto(..., wait_until="domcontentloaded")` above is sufficient for
+            # the in-page fetch/WebSocket calls used by this driver.
         except PlaywrightError as exc:
             self.close()
             raise ConnectionError(f"Failed to start browser: {exc}") from exc

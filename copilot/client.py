@@ -23,12 +23,11 @@ anonymous consumer chat is available), or ``proxy=...`` to route through a
 supported region.
 """
 
-import time
 from dataclasses import dataclass, field
 from typing import Generator, List, Optional, Union
 
-from .auth import AUTH_MAX_AGE, load_auth
-from .driver import Copilot
+from .auth import AUTH_MAX_AGE
+from .m365_driver import BROWSER_DEFAULT_TONE, CopilotDriver
 from .models import Conversation, ImageResponse
 
 
@@ -84,11 +83,13 @@ class CopilotClient:
         proxy: Optional[str] = None,
         max_age: int = AUTH_MAX_AGE,
     ):
-        self._driver = Copilot()
+        # Microsoft moved the current Copilot Chat surface to the M365 web
+        # application. Its chat turn is carried by the page's SignalR/Chathub
+        # WebSocket, so the old curl_cffi consumer driver cannot reach it.
+        self._driver = CopilotDriver(headless=False)
         self._anonymous = anonymous
         self._proxy = proxy
         self._max_age = max_age
-        self._auth: Optional[dict] = None
 
     def stream(
         self,
@@ -102,21 +103,12 @@ class CopilotClient:
         continues that conversation. Read ``.conversation_id`` on the returned
         stream (during/after iteration) to continue the chat later.
         """
-        auth = self._fresh_auth()
-        kw = dict(
-            stream=True,
-            proxy=self._proxy,
-            cookies=auth["cookies"] if auth else None,
-            access_token=auth["access_token"] if auth else None,
-            **kwargs,
-        )
-        if conversation_id is None:
-            # New conversation: have the driver hand back its id.
-            kw["return_conversation"] = True
-        else:
-            kw["conversation_id"] = conversation_id
-
-        chunks = self._driver.create_completion(prompt, **kw)
+        # The resident browser owns one real Copilot conversation. Keep the
+        # OpenAI conversation_id as a client-side handle for compatibility; the
+        # browser driver serializes turns on the authenticated session.
+        tone = kwargs.pop("tone", BROWSER_DEFAULT_TONE)
+        images = kwargs.pop("images", None)
+        chunks = (text for kind, text in self._driver.prompt(prompt, tone=tone, images=images or []))
         return ChatStream(chunks, conversation_id)
 
     def chat(
@@ -138,11 +130,3 @@ class CopilotClient:
             elif isinstance(item, ImageResponse):
                 images.append(item)
         return ChatReply("".join(text), s.conversation_id, images)
-
-    def _fresh_auth(self) -> Optional[dict]:
-        """Return current signed-in auth, refreshing it when stale (or None)."""
-        if self._anonymous:
-            return None
-        if self._auth is None or (time.time() - self._auth.get("saved_at", 0)) >= self._max_age:
-            self._auth = load_auth(max_age=self._max_age, proxy=self._proxy)
-        return self._auth
