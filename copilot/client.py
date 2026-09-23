@@ -49,16 +49,28 @@ class ChatStream:
     new conversation is created.
     """
 
-    def __init__(self, chunks: Generator, conversation_id: Optional[str]):
+    def __init__(
+        self,
+        chunks: Generator,
+        conversation_id: Optional[str],
+        conversation_id_getter=None,
+    ):
         self._chunks = chunks
         self.conversation_id = conversation_id
+        self._conversation_id_getter = conversation_id_getter
 
     def __iter__(self) -> Generator[Union[str, ImageResponse], None, None]:
-        for item in self._chunks:
-            if isinstance(item, Conversation):
-                self.conversation_id = item.conversation_id
-            else:
-                yield item
+        try:
+            for item in self._chunks:
+                if isinstance(item, Conversation):
+                    self.conversation_id = item.conversation_id
+                else:
+                    yield item
+        finally:
+            if self._conversation_id_getter is not None:
+                current = self._conversation_id_getter()
+                if current:
+                    self.conversation_id = current
 
 
 class CopilotClient:
@@ -103,13 +115,21 @@ class CopilotClient:
         continues that conversation. Read ``.conversation_id`` on the returned
         stream (during/after iteration) to continue the chat later.
         """
-        # The resident browser owns one real Copilot conversation. Keep the
-        # OpenAI conversation_id as a client-side handle for compatibility; the
-        # browser driver serializes turns on the authenticated session.
+        # The resident browser owns the real Copilot conversation. The local
+        # conversation_id is the id in Copilot's /chat/conversation/<id> URL, so
+        # it can be persisted by Eve and reopened after the bridge restarts.
         tone = kwargs.pop("tone", BROWSER_DEFAULT_TONE)
         images = kwargs.pop("images", None)
-        chunks = (text for kind, text in self._driver.prompt(prompt, tone=tone, images=images or []))
-        return ChatStream(chunks, conversation_id)
+        chunks = (
+            text
+            for kind, text in self._driver.prompt(
+                prompt,
+                tone=tone,
+                images=images or [],
+                conversation_id=conversation_id,
+            )
+        )
+        return ChatStream(chunks, conversation_id, lambda: self._driver.conversation_id)
 
     def chat(
         self,

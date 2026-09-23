@@ -32,6 +32,43 @@ You sign in once with your Microsoft account in a browser; your session is saved
 
 ## Setup (2 minutes)
 
+### Native release bundle (recommended for ParadigmEve)
+
+Release bundles contain the Python runtime dependencies and a Playwright Chromium fallback, so the
+target computer does **not** need Git, a repository clone, Python, pip, or `playwright install`.
+Download/extract the bundle for the target OS/architecture, then run:
+
+```text
+windows-copilot-api login --session-dir <writable app-owned folder>
+windows-copilot-api serve --session-dir <same folder> --host 127.0.0.1 --port 8000
+```
+
+The portable default uses the bundled Chromium. A managed host such as ParadigmEve can instead ask
+Playwright to use an installed branded browser, for example `--browser-channel msedge` or
+`--browser-channel chrome`, while keeping the persistent profile in the explicitly supplied session
+directory. The normal user machine never needs GitHub access; GitHub is only a build/release source.
+
+A managed host may also pass `--profile-dir <exact directory>` to select the persistent Chromium
+profile explicitly. This supports a product choice between an isolated Eve-owned Copilot profile and
+an explicitly selected user profile. The bridge does not copy cookies, tokens, or profile state
+between those directories. The bundled Playwright Chromium remains the portable default, so Copilot
+does not depend on Edge, Chrome, or another browser already being installed.
+
+Native CI builds cover Windows x64/ARM64, macOS Intel/Apple Silicon and Linux x64/ARM64.
+
+For the `1.0.0` release, consumers can use stable release-asset URLs with these exact filenames:
+
+- `windows-copilot-api-1.0.0-windows-x64.zip`
+- `windows-copilot-api-1.0.0-windows-arm64.zip`
+- `windows-copilot-api-1.0.0-macos-x64.tar.gz`
+- `windows-copilot-api-1.0.0-macos-arm64.tar.gz`
+- `windows-copilot-api-1.0.0-linux-x64.tar.gz`
+- `windows-copilot-api-1.0.0-linux-arm64.tar.gz`
+- `SHA256SUMS.txt`
+
+The release tag intentionally has **no `v` prefix** (`1.0.0`) so downstream packagers can construct
+the asset URL mechanically and pin the matching checksum.
+
 ```bash
 # 1. Clone the project
 git clone <your-repo-url>

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import queue
 import re
 import tempfile
@@ -41,8 +42,42 @@ def split_records(payload: str):
 def redact_url(url: str) -> str:
     return re.sub(r"([?&](?:access_token|accessToken)=)[^&]+", r"\1REDACTED", url, flags=re.I)
 
-CHAT_URL = "https://copilot.cloud.microsoft/chat"
-PROFILE_DIR = Path(__file__).parent / "session" / "profile-m365"
+CHAT_URL = os.environ.get("COPILOT_CHAT_URL", "https://copilot.cloud.microsoft/chat")
+CONVERSATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{7,127}$")
+CONVERSATION_PATH_RE = re.compile(r"/chat/conversation/([A-Za-z0-9][A-Za-z0-9-]{7,127})(?:[/?#]|$)")
+
+
+def conversation_id_from_url(url: str) -> str | None:
+    """Extract the durable Copilot conversation id from an M365 chat URL."""
+    match = CONVERSATION_PATH_RE.search(url or "")
+    return match.group(1) if match else None
+
+
+def conversation_url(conversation_id: str) -> str:
+    """Build the exact M365 Copilot URL for a validated conversation id."""
+    if not CONVERSATION_ID_RE.fullmatch(conversation_id or ""):
+        raise ValueError("invalid Copilot conversation id")
+    return f"{CHAT_URL.rstrip('/')}/conversation/{conversation_id}"
+
+
+def default_profile_dir() -> Path:
+    """Return the persistent profile selected by the host/runtime.
+
+    A managed host such as ParadigmEve may deliberately point at either its own
+    isolated Copilot profile or an explicitly selected user profile.  An exact
+    profile override wins over the app-owned session root; there is never any
+    implicit copying between those profile identities.
+    """
+    explicit_profile = os.environ.get("COPILOT_PROFILE_DIR", "").strip()
+    if explicit_profile:
+        return Path(explicit_profile).expanduser().resolve()
+    session_root = os.environ.get("COPILOT_SESSION_DIR", "").strip()
+    if session_root:
+        return Path(session_root).expanduser().resolve() / "profile-m365"
+    return Path(__file__).parent / "session" / "profile-m365"
+
+
+PROFILE_DIR = default_profile_dir()
 
 # Discovered with probe_dom.py, not guessed. The composer is a <span> with
 # role="textbox"; tag-qualified selectors miss it. Match on role and
@@ -169,16 +204,21 @@ class CopilotDriver:
     """Owns one browser on one thread; serialises turns."""
 
     def __init__(self, headless: bool = False, url: str = CHAT_URL,
-                 profile: str | None = None) -> None:
+                 profile: str | None = None,
+                 browser_channel: str | None = None,
+                 browser_executable: str | None = None) -> None:
         self._url = url
         self._headless = headless
-        self._profile = profile or str(PROFILE_DIR)
+        self._profile = profile or str(default_profile_dir())
+        self._browser_channel = browser_channel or os.environ.get("COPILOT_BROWSER_CHANNEL", "").strip() or None
+        self._browser_executable = browser_executable or os.environ.get("COPILOT_BROWSER_EXECUTABLE", "").strip() or None
         self._commands: queue.Queue = queue.Queue()
         self._events: queue.Queue = queue.Queue()
         self._turn_lock = threading.Lock()
         self._ready = threading.Event()
         self._error: BaseException | None = None
         self._socket_url: str | None = None
+        self._conversation_id: str | None = None
         self._current_tone: str = BROWSER_DEFAULT_TONE
         self._cancel_requested = False
         self._uploads: queue.Queue = queue.Queue()
@@ -240,11 +280,33 @@ class CopilotDriver:
     # --- browser thread --------------------------------------------------
 
     def _attach(self, page) -> None:
+        initial_conversation = conversation_id_from_url(page.url)
+        if initial_conversation:
+            self._conversation_id = initial_conversation
+
+        def on_navigated(frame) -> None:
+            try:
+                if frame != page.main_frame:
+                    return
+                current = conversation_id_from_url(frame.url)
+                if current:
+                    self._conversation_id = current
+            except Exception:
+                return
+
+        page.on("framenavigated", on_navigated)
+
         def on_websocket(ws) -> None:
             if is_chathub(ws.url):
                 self._socket_url = redact_url(ws.url)
                 print(f"[driver] chathub attached: {self._socket_url[:90]}", flush=True)
-                ws.on("framereceived", self._on_frame)
+                def on_frame(payload) -> None:
+                    current = conversation_id_from_url(page.url)
+                    if current:
+                        self._conversation_id = current
+                    self._on_frame(payload)
+
+                ws.on("framereceived", on_frame)
 
         page.on("websocket", on_websocket)
 
@@ -283,7 +345,7 @@ class CopilotDriver:
                 continue
         return None
 
-    def _wait_composer(self, page, attempts: int = 120):
+    def _wait_composer(self, page, attempts: int = 600):
         for _ in range(attempts):
             box = self._find_composer(page)
             if box is not None:
@@ -432,10 +494,17 @@ class CopilotDriver:
     def _run(self) -> None:
         try:
             with sync_playwright() as pw:
+                launch_options = {
+                    "headless": self._headless,
+                    "viewport": {"width": 1500, "height": 950},
+                }
+                if self._browser_channel and self._browser_channel.lower() not in {"chromium", "bundled"}:
+                    launch_options["channel"] = self._browser_channel
+                if self._browser_executable:
+                    launch_options["executable_path"] = self._browser_executable
                 context = pw.chromium.launch_persistent_context(
                     user_data_dir=self._profile,
-                    headless=self._headless,
-                    viewport={"width": 1500, "height": 950},
+                    **launch_options,
                 )
                 page = context.pages[0] if context.pages else context.new_page()
                 self._attach(page)
@@ -444,8 +513,8 @@ class CopilotDriver:
 
                 if self._wait_composer(page) is None:
                     raise RuntimeError(
-                        "No composer found. Sign in once with "
-                        "`python capture.py --label signin` so the profile holds a session."
+                        "No Copilot composer found after waiting for sign-in. Run the packaged "
+                        "`login` command and finish Microsoft sign-in in the browser window."
                     )
                 page.wait_for_timeout(2000)
                 self._ready.set()
@@ -467,7 +536,21 @@ class CopilotDriver:
                         continue
                     if command is None:
                         break
-                    text, tone, images = command
+                    text, tone, images, requested_conversation_id = command
+
+                    if requested_conversation_id != self._conversation_id:
+                        target = (
+                            conversation_url(requested_conversation_id)
+                            if requested_conversation_id
+                            else self._url
+                        )
+                        page.goto(target, wait_until="domcontentloaded")
+                        if self._wait_composer(page) is None:
+                            self._events.put(("error", "composer lost while selecting conversation"))
+                            self._events.put(("done", None))
+                            continue
+                        page.wait_for_timeout(1200)
+                        self._conversation_id = requested_conversation_id
 
                     # tone is per-conversation, so a change needs a fresh chat.
                     if tone != self._current_tone:
@@ -531,6 +614,10 @@ class CopilotDriver:
     def current_tone(self) -> str:
         return self._current_tone
 
+    @property
+    def conversation_id(self) -> str | None:
+        return self._conversation_id
+
     def is_alive(self) -> bool:
         return self._thread.is_alive() and self._error is None
 
@@ -540,6 +627,7 @@ class CopilotDriver:
 
     def prompt(self, text: str, tone: str = DEFAULT_TONE,
                images: list[str] | None = None,
+               conversation_id: str | None = None,
                timeout: float = 300.0) -> Iterator[tuple[str, str]]:
         """Send one prompt; yield ("text"|"reasoning", delta) as it arrives.
 
@@ -556,7 +644,9 @@ class CopilotDriver:
                 except queue.Empty:
                     break
 
-            self._commands.put((text, tone, images or []))
+            if conversation_id is not None and not CONVERSATION_ID_RE.fullmatch(conversation_id):
+                raise ValueError("invalid Copilot conversation id")
+            self._commands.put((text, tone, images or [], conversation_id))
             deadline = time.monotonic() + timeout
             emitted: dict[str, str] = {}
             progress_seen: set[str] = set()

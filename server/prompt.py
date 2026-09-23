@@ -9,6 +9,26 @@ from typing import Any, List, Optional, Union
 from .schemas import ChatMessage
 
 
+def content_images(content: Optional[Union[str, List[Any]]]) -> List[str]:
+    """Extract OpenAI image_url parts as browser-ready data URIs.
+
+    The browser driver owns the actual upload and sanitizer interaction.  This
+    adapter deliberately accepts only inline data URIs from the local Eve bridge;
+    it never turns an arbitrary remote URL into a browser fetch.
+    """
+    if not isinstance(content, list):
+        return []
+    images: List[str] = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "image_url":
+            continue
+        raw = part.get("image_url")
+        url = raw.get("url") if isinstance(raw, dict) else raw
+        if isinstance(url, str) and url.startswith("data:image/"):
+            images.append(url)
+    return images
+
+
 def content_text(content: Optional[Union[str, List[Any]]]) -> str:
     """Extract plain text from a message's content (string or content-parts)."""
     if content is None:
@@ -45,3 +65,12 @@ def messages_to_prompt(messages: List[ChatMessage]) -> str:
     if system and body:
         return f"{system}\n\n{body}"
     return system or body
+
+
+def messages_to_prompt_and_images(messages: List[ChatMessage]) -> tuple[str, List[str]]:
+    """Flatten text while preserving inline image parts for the browser upload path."""
+    prompt = messages_to_prompt(messages)
+    images: List[str] = []
+    for message in messages:
+        images.extend(content_images(message.content))
+    return prompt, images

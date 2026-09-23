@@ -27,23 +27,13 @@ from .api import app as _api
 def app(host="127.0.0.1", port=8000) -> None:
     """Start the server (blocks while uvicorn runs).
 
-    On first run (no saved session) this opens a browser for interactive sign-in
-    before serving, so requests don't fail with a "not signed in" error.
+    The resident Microsoft 365 browser driver owns sign-in/session state. Packaged
+    deployments should run `windows-copilot-api login` once before starting the server.
     """
     import uvicorn
 
-    from copilot.auth import load_auth
-
     host = host or os.environ.get("HOST", "127.0.0.1")
     port = port or int(os.environ.get("PORT", "8000"))
-
-    # Ensure a signed-in Copilot session exists before we start serving. On the
-    # very first run this triggers the interactive browser sign-in (instead of
-    # letting the first HTTP request fail), then caches it for reuse.
-    try:
-        load_auth()
-    except Exception as exc:
-        print(f"Warning: could not establish a Copilot session: {exc}")
 
     print(f"Copilot OpenAI-compatible API on http://{host}:{port}  (POST /v1/chat/completions)")
     uvicorn.run(_api, host=host, port=port)

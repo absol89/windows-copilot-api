@@ -15,7 +15,7 @@ from .openai_format import (
     sse_event,
     stream_chunk,
 )
-from .prompt import messages_to_prompt
+from .prompt import messages_to_prompt_and_images
 from .schemas import ChatCompletionRequest
 
 app = FastAPI(title="Copilot OpenAI-compatible API", version="1.0.0")
@@ -29,7 +29,7 @@ client = CopilotClient()
 _upstream_lock = threading.Lock()
 
 
-def _stream(prompt: str, model: str, conversation_id=None):
+def _stream(prompt: str, model: str, conversation_id=None, images=None):
     """Yield OpenAI ``chat.completion.chunk`` SSE events for ``prompt``.
 
     ``conversation_id`` continues an existing Copilot thread; ``None`` starts a
@@ -40,7 +40,7 @@ def _stream(prompt: str, model: str, conversation_id=None):
     try:
         with _upstream_lock:  # one upstream chat at a time (released on disconnect)
             yield sse_event(stream_chunk(cid, created, model, {"role": "assistant"}))
-            stream = client.stream(prompt, conversation_id=conversation_id)
+            stream = client.stream(prompt, conversation_id=conversation_id, images=images or [])
             for piece in stream:
                 if isinstance(piece, str) and piece:
                     yield sse_event(stream_chunk(cid, created, model, {"content": piece}))
@@ -71,7 +71,7 @@ def list_models():
 
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
-    prompt = messages_to_prompt(req.messages)
+    prompt, images = messages_to_prompt_and_images(req.messages)
     if not prompt.strip():
         return JSONResponse(
             status_code=400,
@@ -81,12 +81,12 @@ def chat_completions(req: ChatCompletionRequest):
 
     if req.stream:
         return StreamingResponse(
-            _stream(prompt, model, req.conversation_id), media_type="text/event-stream"
+            _stream(prompt, model, req.conversation_id, images), media_type="text/event-stream"
         )
 
     try:
         with _upstream_lock:  # serialize: one upstream chat at a time
-            reply = client.chat(prompt, conversation_id=req.conversation_id)
+            reply = client.chat(prompt, conversation_id=req.conversation_id, images=images)
     except Exception as exc:
         return JSONResponse(
             status_code=502,

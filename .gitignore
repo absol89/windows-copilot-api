@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 venv/
 .venv/
+build/
+dist/
+release/
+.release-venv/
+.playwright-browsers/
 
 # All session state: persistent browser profile (cookies, Cloudflare
 # clearance, sign-in) + cached auth token. Secret.
