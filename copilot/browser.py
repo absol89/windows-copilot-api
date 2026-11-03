@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
 from .auth import DEFAULT_AUTH_FILE, DEFAULT_PROFILE_DIR, auth_from_token_response, save_auth
+from .protocol import MSA_TENANT
 
 NEW_CHAT_URL = "https://copilot.com/chat"
 _LOGIN_HOSTS = ("login.microsoftonline.com", "login.live.com")
@@ -105,6 +106,7 @@ class BrowserCopilot:
             return self
         if headless is not None:
             self.headless = headless
+        self._hub_context = {}
         try:
             self._pw = sync_playwright().start()
             # The browser presents its own, real User-Agent: pinning a fixed one
@@ -244,6 +246,17 @@ class BrowserCopilot:
         except Exception:
             return True
 
+    @staticmethod
+    def _has_verified_routing(auth: dict) -> bool:
+        """Never treat a work account token as proof of its chat license route."""
+        tenant = auth.get("tenant")
+        return bool(
+            tenant and (
+                tenant == MSA_TENANT
+                or (auth.get("scenario") and auth.get("license_type"))
+            )
+        )
+
     def _await_token(self, timeout: float, give_up_on_login: bool) -> Optional[dict]:
         """Wait for the page to request a chat token; nudge it once if it doesn't.
 
@@ -254,9 +267,18 @@ class BrowserCopilot:
         nudge_at = time.time() + 8
         nudged = False
         on_login_since: Optional[float] = None
+        prompted_for_hub = False
         while time.time() < deadline:
-            if self._captured:
+            if self._captured and self._has_verified_routing(self._captured):
                 return self._captured
+            if self._captured and not prompted_for_hub and not give_up_on_login:
+                print(
+                    "Account token captured. For a work/school Copilot account, "
+                    "send one ordinary question in this sign-in window so the "
+                    "gateway can verify the tenant license and chat route.",
+                    flush=True,
+                )
+                prompted_for_hub = True
             if self._window_closed():
                 return None
             if self._on_login_page():
@@ -277,7 +299,7 @@ class BrowserCopilot:
                 self._page.wait_for_timeout(500)
             except PlaywrightError:
                 return None
-        return self._captured
+        return self._captured if self._captured and self._has_verified_routing(self._captured) else None
 
     def capture_auth(self, timeout: int = 45) -> Optional[dict]:
         """Headless: return a fresh auth dict from a signed-in profile, or None."""

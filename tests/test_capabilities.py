@@ -16,6 +16,7 @@ from copilot.capabilities import (
 )
 from copilot.protocol import chat_frame
 from copilot.client import CopilotClient
+from copilot.browser import BrowserCopilot
 from copilot.protocol import MSA_TENANT
 
 
@@ -39,6 +40,20 @@ class CapabilityTests(unittest.TestCase):
         )
         self.assertEqual(auth["tenant"], "anchor-tenant")
         self.assertIn("tenant-work", auth["token_url"])
+
+    def test_browser_needs_actual_work_chathub_route_not_just_a_token(self):
+        self.assertFalse(BrowserCopilot._has_verified_routing({
+            "access_token": "opaque", "tenant": "work-tenant"
+        }))
+        self.assertTrue(BrowserCopilot._has_verified_routing({
+            "access_token": "opaque",
+            "tenant": "work-tenant",
+            "scenario": "OfficeWebIncludedCopilot",
+            "license_type": "Starter",
+        }))
+        self.assertTrue(BrowserCopilot._has_verified_routing({
+            "access_token": "opaque", "tenant": MSA_TENANT
+        }))
 
     def test_picker_discovery_controls_named_models(self):
         with tempfile.TemporaryDirectory() as folder:

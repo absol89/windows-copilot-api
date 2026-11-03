@@ -40,7 +40,13 @@ being an ignored label. Work-account chat is **fail-closed** until the gateway
 has verified the account tenant and observed its license/scenario routing.
 It never substitutes consumer-Free routing for an unverified organization
 account. This is a development integration; Microsoft 365 enterprise tenant
-acceptance remains to be tested on a licensed account.
+  acceptance remains to be tested on a licensed account.
+
+For a work or school account, the gateway authorization window may ask you to
+send one ordinary Copilot question before it closes. The question establishes
+the actual Chathub license/scenario route; a bare account token does not prove
+this. No question is sent automatically, and an unverified organization
+session is not marked ready.
 
 For independent state storage set COPILOT_SESSION_DIR to an app-owned private
 folder. To use installed Edge or Chrome for *gateway authorization* set
