@@ -24,3 +24,7 @@ class ChatCompletionRequest(BaseModel):
     conversation_id: Optional[str] = None
     # Any other OpenAI fields (temperature, max_tokens, ...) are accepted and
     # ignored — Copilot's consumer protocol doesn't expose those knobs.
+
+
+class ModelDiscoveryRequest(BaseModel):
+    models: List[str]

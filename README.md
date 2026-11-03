@@ -183,7 +183,22 @@ curl http://localhost:8000/v1/chat/completions \
 | Method | Path | Description |
 | --- | --- | --- |
 | `POST` | `/v1/chat/completions` | Chat (supports `"stream": true` and an optional `"conversation_id"`) |
-| `GET`  | `/v1/models` | Lists the single `copilot` model |
+| `GET`  | `/health` | Gateway readiness, auth/account type and discovered model summary |
+| `GET`  | `/v1/capabilities` | Tenant/license/scenario metadata and currently available models |
+| `POST` | `/v1/capabilities/models` | Persist model-picker labels explicitly observed for this signed-in account |
+| `GET`  | `/v1/models` | OpenAI-compatible list of baseline and account-discovered Copilot modes/models |
+
+Model ids are mapped to the M365 Copilot chat protocol's real `tone` value. The
+baseline modes are Auto (`copilot`), Quick response (`quick`) and Think deeper
+(`think-deeper`). Named models such as GPT or Claude variants are advertised
+only after the signed-in account's picker has explicitly exposed a supported
+label and a caller records that discovery through the capabilities endpoint.
+Unknown labels are rejected rather than guessed.
+
+The account routing captured at sign-in includes the Chathub tenant plus
+license/scenario metadata when the web client exposes it. Consumer accounts
+therefore keep the MSA route, while organization accounts can preserve their
+own tenant routing instead of inheriting the consumer-Free defaults.
 
 > Change the address with env vars: `HOST=0.0.0.0 PORT=8080 python app.py`, or run `uvicorn server.api:app --host 0.0.0.0 --port 8080`.
 
@@ -309,7 +324,9 @@ add a few retries yourself.
 - **Sign in once, then reuse.** The cached token refreshes automatically over HTTP; you only re-sign-in if the session fully expires.
 - **Daily allowance.** The free copilot.com tier meters usage per day (the reply metadata shows a daily quota that resets at midnight UTC). Use it in moderation, and don't hammer it with automated bulk requests.
 - **Text only for now.** Image input isn't supported on the new copilot.com backend yet.
-- **One model.** Copilot has no model picker, so the server advertises a single model named `copilot`.
+- **Account-specific models.** The gateway always knows the three baseline Copilot modes and can persist additional named models only after they are observed for the signed-in account. A work/education tenant may expose a different set from a personal Free account.
+- **Browser and gateway sessions are explicit.** This project keeps its own sign-in/token cache under `session/`. A host application may separately open copilot.com in the user's normal browser for SSO/model visibility, but it should not scrape that browser's credential store to populate this gateway.
+- **The old /c/api transport is retired.** A legacy browser-driver experiment that only changed copilot.microsoft.com to copilot.com reached the new site but the old /c/api chat routes returned 405/not-found. Current main uses the M365 SignalR Chathub on substrate.office.com instead.
 - **Roughly GPT-4 class.** On GPQA Diamond (198 graduate-level questions, closed-book) it scores **40.9%**, which puts it in the GPT-4 family rather than the reasoning tier (o1/o3). Measured with [tests/gpqa_bench.py](tests/gpqa_bench.py).
 - **Your session is private.** Everything in `session/` (browser profile + tokens) stays on your machine and is git-ignored.
 

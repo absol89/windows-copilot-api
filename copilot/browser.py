@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from playwright.sync_api import Error as PlaywrightError, sync_playwright
 
@@ -92,6 +92,7 @@ class BrowserCopilot:
         self._page = None
         self._login_log_fh = None
         self._captured: Optional[dict] = None
+        self._hub_context: dict = {}
         self._cookies_file = Path(self.profile_dir).parent / _SESSION_COOKIES_FILE
 
     # -- lifecycle ----------------------------------------------------------
@@ -120,6 +121,7 @@ class BrowserCopilot:
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
             self._page.set_default_timeout(self.nav_timeout * 1000)
             self._page.on("response", self._on_response)
+            self._page.on("websocket", self._on_websocket)
         except PlaywrightError as exc:
             self.close()
             raise ConnectionError(f"Failed to start browser: {exc}") from exc
@@ -177,6 +179,29 @@ class BrowserCopilot:
 
     # -- token capture --------------------------------------------------------
 
+    def _on_websocket(self, websocket) -> None:
+        try:
+            parsed = urlparse(websocket.url)
+            if "substrate.office.com" not in (parsed.hostname or ""):
+                return
+            if "/m365Copilot/Chathub/" not in parsed.path:
+                return
+            route = unquote(parsed.path.rsplit("/", 1)[-1])
+            tenant = route.rsplit("@", 1)[-1] if "@" in route else None
+            query = parse_qs(parsed.query)
+            context = {
+                "tenant": tenant,
+                "license_type": (query.get("licenseType") or [None])[0],
+                "scenario": (query.get("scenario") or [None])[0],
+                "agent_host": (query.get("agentHost") or [None])[0],
+                "product": (query.get("product") or [None])[0],
+            }
+            self._hub_context.update({k: v for k, v in context.items() if v})
+            if self._captured:
+                self._captured.update(self._hub_context)
+        except Exception:
+            pass
+
     def _on_response(self, response) -> None:
         """Capture the chat token from copilot.com's own token-endpoint call."""
         try:
@@ -190,7 +215,10 @@ class BrowserCopilot:
             if not anchor or "access_token" not in body:
                 return
             oid = anchor.split(":", 1)[-1].split("@", 1)[0]
-            self._captured = auth_from_token_response(body, oid, anchor, time.time())
+            self._captured = auth_from_token_response(
+                body, oid, anchor, time.time(), token_url=response.url.split("?", 1)[0]
+            )
+            self._captured.update(self._hub_context)
         except Exception:
             pass  # unrelated/unreadable response
 

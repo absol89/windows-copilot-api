@@ -7,6 +7,7 @@ Renewal is plain HTTP; the browser is only a fallback when the refresh token has
 expired, and for the very first sign-in.
 """
 
+import base64
 import json
 import time
 from pathlib import Path
@@ -29,13 +30,37 @@ AUTH_MAX_AGE = 7 * 60 * 60
 _EXPIRY_MARGIN = 5 * 60
 
 
-def auth_from_token_response(body: dict, oid: str, anchor: str, stamp: float) -> dict:
+def _jwt_claims(token: str) -> dict:
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except (IndexError, ValueError, UnicodeDecodeError):
+        return {}
+
+
+def _anchor_tenant(anchor: Optional[str]) -> Optional[str]:
+    if not anchor or "@" not in anchor:
+        return None
+    return anchor.rsplit("@", 1)[-1] or None
+
+
+def auth_from_token_response(
+    body: dict,
+    oid: str,
+    anchor: str,
+    stamp: float,
+    token_url: Optional[str] = None,
+) -> dict:
     """Build the ``token.json`` dict from an OAuth token-endpoint response."""
+    claims = _jwt_claims(body["access_token"])
     return {
         "access_token": body["access_token"],
         "refresh_token": body.get("refresh_token"),
         "oid": oid,
         "anchor": anchor,
+        "tenant": _anchor_tenant(anchor) or claims.get("tid"),
+        "token_url": token_url,
         "expires_at": stamp + int(body.get("expires_in", 3600)),
         "saved_at": stamp,
     }
@@ -46,6 +71,15 @@ def save_auth(auth: dict, path: str = DEFAULT_AUTH_FILE) -> dict:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(auth, indent=2), encoding="utf-8")
     return auth
+
+
+def read_cached_auth(path: str = DEFAULT_AUTH_FILE) -> dict:
+    """Read the auth snapshot without refreshing it or opening a browser."""
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def refresh_auth(auth: dict, proxy: Optional[str] = None) -> Optional[dict]:
@@ -70,8 +104,10 @@ def refresh_auth(auth: dict, proxy: Optional[str] = None) -> Optional[dict]:
         data["X-AnchorMailbox"] = auth["anchor"]
     try:
         with Session(impersonate="chrome", proxy=proxy, timeout=30) as session:
+            token_url = auth.get("token_url") or TOKEN_URL
+            separator = "&" if "?" in token_url else "?"
             response = session.post(
-                f"{TOKEN_URL}?brk_client_id={BROKER_CLIENT_ID}",
+                f"{token_url}{separator}brk_client_id={BROKER_CLIENT_ID}",
                 data=data,
                 headers={"Origin": TOKEN_ORIGIN},
             )
@@ -80,7 +116,16 @@ def refresh_auth(auth: dict, proxy: Optional[str] = None) -> Optional[dict]:
         return None
     if response.status_code != 200 or "access_token" not in body:
         return None
-    renewed = auth_from_token_response(body, auth["oid"], auth.get("anchor"), time.time())
+    renewed = auth_from_token_response(
+        body,
+        auth["oid"],
+        auth.get("anchor"),
+        time.time(),
+        token_url=auth.get("token_url") or TOKEN_URL,
+    )
+    for key in ("tenant", "license_type", "scenario", "agent_host", "product"):
+        if auth.get(key) is not None and renewed.get(key) is None:
+            renewed[key] = auth[key]
     # Some responses omit a new refresh token; keep the old one then.
     renewed["refresh_token"] = renewed["refresh_token"] or auth["refresh_token"]
     return renewed

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Generator, List, Optional, Union
 
 from .auth import AUTH_MAX_AGE, load_auth
+from .capabilities import resolve_model
 from .driver import AuthExpired, Copilot
 from .models import Conversation, ImageResponse
 
@@ -131,6 +132,8 @@ class CopilotClient:
 
     def _stream_with_recovery(self, prompt, conversation_id, kwargs):
         """Drive the turn; on a rejected token, refresh it and retry once."""
+        options = dict(kwargs)
+        spec = resolve_model(options.pop("model", None))
         for attempt in range(2):
             auth = self._fresh_auth(force=attempt > 0)
             kw = dict(
@@ -138,7 +141,13 @@ class CopilotClient:
                 proxy=self._proxy,
                 access_token=auth["access_token"],
                 oid=auth["oid"],
-                **kwargs,
+                tenant=auth.get("tenant") or None,
+                license_type=spec.license_type or auth.get("license_type"),
+                scenario=spec.scenario or auth.get("scenario"),
+                agent_host=auth.get("agent_host"),
+                product=auth.get("product"),
+                tone=spec.tone,
+                **options,
             )
             if conversation_id is None:
                 kw["return_conversation"] = True  # have the driver hand back its id

@@ -64,6 +64,11 @@ class Copilot(AbstractProvider):
             access_token: str = None,
             oid: str = None,
             tenant: str = MSA_TENANT,
+            tone: str = "Magic",
+            license_type: str = None,
+            scenario: str = None,
+            agent_host: str = None,
+            product: str = None,
             **kwargs
         ):
         """Stream a Copilot reply to ``prompt``.
@@ -88,6 +93,7 @@ class Copilot(AbstractProvider):
         if not access_token or not oid:
             raise ValueError("A signed-in access_token and account oid are required "
                              "(see copilot.auth.load_auth).")
+        tenant = tenant or MSA_TENANT
 
         start_of_session = conversation_id is None
         if start_of_session:
@@ -97,6 +103,15 @@ class Copilot(AbstractProvider):
 
         request_id = str(uuid.uuid4())
         session_id = str(uuid.uuid4())
+        hub_params = dict(HUB_PARAMS)
+        if license_type:
+            hub_params["licenseType"] = license_type
+        if scenario:
+            hub_params["scenario"] = scenario
+        if agent_host:
+            hub_params["agentHost"] = agent_host
+        if product:
+            hub_params["product"] = product
         query = {
             "chatsessionid": request_id,
             "XRoutingParameterSessionKey": oid,
@@ -105,7 +120,7 @@ class Copilot(AbstractProvider):
             "ConversationId": conversation_id,
             "access_token": access_token,
             "variants": VARIANTS,
-            **HUB_PARAMS,
+            **hub_params,
         }
         websocket_url = (CHATHUB_URL.format(oid=oid, tenant=tenant) + "?"
                          + urlencode(query, quote_via=quote, safe=","))
@@ -120,7 +135,9 @@ class Copilot(AbstractProvider):
                 raise
             wss.send(HANDSHAKE, CurlWsFlag.TEXT)
             wss.send(PING, CurlWsFlag.TEXT)
-            wss.send(encode(chat_frame(prompt, request_id, session_id, start_of_session)),
+            wss.send(encode(chat_frame(
+                prompt, request_id, session_id, start_of_session, tone=tone
+            )),
                      CurlWsFlag.TEXT)
             yield from self._read_stream(wss, timeout)
 

@@ -7,6 +7,14 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from copilot import CopilotClient
+from copilot.auth import read_cached_auth
+from copilot.capabilities import (
+    available_models,
+    discovery_complete,
+    model_payload,
+    resolve_model,
+    save_discovered_models,
+)
 from copilot.driver import ClearanceRequired
 
 from .config import MODEL_NAME, RATE_LIMIT_BURST, RATE_LIMIT_RPM
@@ -18,7 +26,7 @@ from .openai_format import (
 )
 from .prompt import messages_to_prompt
 from .ratelimit import TokenBucket
-from .schemas import ChatCompletionRequest
+from .schemas import ChatCompletionRequest, ModelDiscoveryRequest
 
 app = FastAPI(title="Copilot OpenAI-compatible API", version="1.0.0")
 # Server must never pop a visible browser mid-request: chat and token refresh
@@ -74,7 +82,7 @@ def _stream(prompt: str, model: str, conversation_id=None):
     try:
         with _upstream_lock:  # one upstream chat at a time (released on disconnect)
             yield sse_event(stream_chunk(cid, created, model, {"role": "assistant"}))
-            stream = client.stream(prompt, conversation_id=conversation_id)
+            stream = client.stream(prompt, conversation_id=conversation_id, model=model)
             for piece in stream:
                 if isinstance(piece, str) and piece:
                     yield sse_event(stream_chunk(cid, created, model, {"content": piece}))
@@ -102,9 +110,60 @@ def list_models():
     return {
         "object": "list",
         "data": [
-            {"id": MODEL_NAME, "object": "model", "created": 0, "owned_by": "microsoft"}
+            {
+                "id": spec.id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "microsoft",
+                "name": spec.label,
+            }
+            for spec in available_models()
         ],
     }
+
+
+def _account_capabilities():
+    auth = read_cached_auth()
+    tenant = auth.get("tenant")
+    account_type = "unknown"
+    if tenant:
+        account_type = (
+            "consumer"
+            if tenant == "84df9e7f-e9f6-40af-b435-aaaaaaaaaaaa"
+            else "organization"
+        )
+    return {
+        "authenticated": bool(auth.get("access_token") and auth.get("oid")),
+        "account_type": account_type,
+        "tenant": tenant,
+        "license_type": auth.get("license_type"),
+        "scenario": auth.get("scenario"),
+        "agent_host": auth.get("agent_host"),
+        "discovery_complete": discovery_complete(),
+        "models": [model_payload(spec) for spec in available_models()],
+    }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "copilot-eve", **_account_capabilities()}
+
+
+@app.get("/v1/capabilities")
+def capabilities():
+    return _account_capabilities()
+
+
+@app.post("/v1/capabilities/models")
+def update_models(req: ModelDiscoveryRequest):
+    try:
+        save_discovered_models(req.models)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": str(exc), "type": "invalid_model_discovery"}},
+        )
+    return _account_capabilities()
 
 
 @app.post("/v1/chat/completions")
@@ -116,6 +175,13 @@ def chat_completions(req: ChatCompletionRequest):
             content={"error": {"message": "no text content in messages", "type": "invalid_request_error"}},
         )
     model = req.model or MODEL_NAME
+    try:
+        resolve_model(model)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": str(exc), "type": "invalid_model"}},
+        )
 
     # Enforce the per-minute ceiling before touching the upstream lock, so excess
     # callers get a fast 429 instead of piling up behind the serialized queue.
@@ -130,7 +196,7 @@ def chat_completions(req: ChatCompletionRequest):
 
     try:
         with _upstream_lock:  # serialize: one upstream chat at a time
-            reply = client.chat(prompt, conversation_id=req.conversation_id)
+            reply = client.chat(prompt, conversation_id=req.conversation_id, model=model)
     except ClearanceRequired:
         return JSONResponse(
             status_code=503,
@@ -146,4 +212,13 @@ def chat_completions(req: ChatCompletionRequest):
 
 @app.get("/")
 def root():
-    return {"service": "Copilot OpenAI-compatible API", "endpoints": ["/v1/models", "/v1/chat/completions"]}
+    return {
+        "service": "Copilot OpenAI-compatible API",
+        "endpoints": [
+            "/health",
+            "/v1/capabilities",
+            "/v1/capabilities/models",
+            "/v1/models",
+            "/v1/chat/completions",
+        ],
+    }
