@@ -31,6 +31,7 @@ from .auth import AUTH_MAX_AGE, load_auth
 from .capabilities import resolve_model
 from .driver import AuthExpired, Copilot
 from .models import Conversation, ImageResponse
+from .protocol import MSA_TENANT
 
 
 def _status(msg: str) -> None:
@@ -136,12 +137,25 @@ class CopilotClient:
         spec = resolve_model(options.pop("model", None))
         for attempt in range(2):
             auth = self._fresh_auth(force=attempt > 0)
+            tenant = auth.get("tenant")
+            if not tenant:
+                raise RuntimeError(
+                    "Copilot gateway cannot verify the signed-in account's tenant. "
+                    "Sign in again before sending; no tenant is guessed."
+                )
+            if tenant != MSA_TENANT and not (
+                auth.get("scenario") and auth.get("license_type")
+            ):
+                raise RuntimeError(
+                    "Copilot work-account license/scenario was not observed during sign-in. "
+                    "Re-discover the account before sending; the consumer-Free route is not used."
+                )
             kw = dict(
                 stream=True,
                 proxy=self._proxy,
                 access_token=auth["access_token"],
                 oid=auth["oid"],
-                tenant=auth.get("tenant") or None,
+                tenant=tenant,
                 license_type=spec.license_type or auth.get("license_type"),
                 scenario=spec.scenario or auth.get("scenario"),
                 agent_host=auth.get("agent_host"),

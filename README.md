@@ -13,6 +13,42 @@ You can use it in two ways:
 
 You sign in once in a browser with your Microsoft **or Google** account; your session is saved and refreshed automatically after that.
 
+### CopilotEve gateway integration (ParadigmEve 2.4.7 development)
+
+CopilotEve can serve an optional loopback-only, OpenAI-compatible local gateway
+without starting a browser automatically. Run python app.py or the bundled
+CopilotEveGateway.exe; GET /health and GET /v1/capabilities work before
+sign-in and report that authentication is still required.
+
+Interactive gateway authorization is **explicit**: run python -m copilot login
+or CopilotEveGateway.exe --login on Windows. This authorization uses its
+own persistent browser context, **not the user's ordinary Edge/Chrome profile**.
+ParadigmEve may independently open copilot.com in the user's selected normal
+browser/profile. That tab does **not** transfer credentials to the local
+gateway. No browser cookies are silently imported or scraped.
+
+GET /v1/models lists the baseline Auto, Quick response and Think deeper
+modes, plus named models previously declared for the **same gateway account**.
+POST /v1/capabilities/models takes observed picker labels (for example Auto
+and GPT 5.6 Think deeper). This is a local declaration, not proof of Microsoft
+entitlement; actual routing remains subject to the signed-in account. Unknown
+model names are rejected, and changing accounts invalidates the previous
+account's discovered named-model menu.
+
+Each chat request's model now drives the Microsoft tone field rather than
+being an ignored label. Work-account chat is **fail-closed** until the gateway
+has verified the account tenant and observed its license/scenario routing.
+It never substitutes consumer-Free routing for an unverified organization
+account. This is a development integration; Microsoft 365 enterprise tenant
+acceptance remains to be tested on a licensed account.
+
+For independent state storage set COPILOT_SESSION_DIR to an app-owned private
+folder. To use installed Edge or Chrome for *gateway authorization* set
+COPILOT_BROWSER_CHANNEL=msedge or chrome. This still uses a gateway-owned
+persistent browser context, not the user's daily browsing profile.
+
+The interface is unofficial and is not a Microsoft-supported Copilot API.
+
 > **Unofficial project.** Not affiliated with or endorsed by Microsoft. It automates the consumer Copilot web experience for personal use, so use it responsibly and within Microsoft's terms.
 
 ---

@@ -39,13 +39,14 @@ def app(host=None, port=None) -> None:
     if port is None:
         port = int(os.environ.get("PORT", "8000"))
 
-    # Ensure a signed-in Copilot session exists before we start serving. On the
-    # very first run this triggers the interactive browser sign-in (instead of
-    # letting the first HTTP request fail), then caches it for reuse.
-    try:
-        load_auth()
-    except Exception as exc:
-        print(f"Warning: could not establish a Copilot session: {exc}")
+    # A background gateway must never open an unexpected browser or create
+    # a second profile. Interactive sign-in is an explicit command, not a
+    # side effect of Eve selecting this provider.
+    if os.environ.get("COPILOT_AUTO_LOGIN") == "1":
+        try:
+            load_auth()
+        except Exception as exc:
+            print(f"Warning: could not establish a Copilot session: {exc}")
 
     print(f"Copilot OpenAI-compatible API on http://{host}:{port}  (POST /v1/chat/completions)")
     uvicorn.run(_api, host=host, port=port)

@@ -16,6 +16,7 @@ from copilot.capabilities import (
     save_discovered_models,
 )
 from copilot.driver import ClearanceRequired
+from copilot.protocol import MSA_TENANT
 
 from .config import MODEL_NAME, RATE_LIMIT_BURST, RATE_LIMIT_RPM
 from .openai_format import (
@@ -127,13 +128,15 @@ def _account_capabilities():
     tenant = auth.get("tenant")
     account_type = "unknown"
     if tenant:
-        account_type = (
-            "consumer"
-            if tenant == "84df9e7f-e9f6-40af-b435-aaaaaaaaaaaa"
-            else "organization"
-        )
+        account_type = "consumer" if tenant == MSA_TENANT else "organization"
+    cached = bool(
+        auth.get("access_token") and auth.get("oid") and
+        isinstance(auth.get("expires_at"), (int, float)) and
+        auth["expires_at"] > time.time()
+    )
     return {
-        "authenticated": bool(auth.get("access_token") and auth.get("oid")),
+        "authenticated": cached,
+        "auth_status": "cached" if cached else "sign_in_required",
         "account_type": account_type,
         "tenant": tenant,
         "license_type": auth.get("license_type"),

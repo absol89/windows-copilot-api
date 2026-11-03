@@ -2,20 +2,25 @@
 
 Copilot's chat protocol does not carry an OpenAI-style model id. The web client
 selects a model/mode with the tone field. Keep the mapping explicit here and
-only advertise named models after the signed-in Copilot UI has actually exposed
-them to Eve.
+only advertise named models after a local discovery declaration. Model discovery
+is bound to the active account, but must not be described as live entitlement
+verification until the corresponding authenticated picker was actually inspected.
 """
 
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
 
-DEFAULT_CAPABILITIES_FILE = "session/capabilities.json"
+DEFAULT_CAPABILITIES_FILE = str(
+    Path(os.environ.get("COPILOT_SESSION_DIR", "session")) / "capabilities.json"
+)
 
 
 @dataclass(frozen=True)
@@ -96,14 +101,32 @@ def _capabilities_path(path: Optional[str] = None) -> Path:
     return Path(path or DEFAULT_CAPABILITIES_FILE)
 
 
-def load_discovered_model_ids(path: Optional[str] = None) -> tuple[str, ...]:
+def account_fingerprint(auth: Optional[dict] = None) -> Optional[str]:
+    """Bind discovery to one Microsoft account without writing its raw oid."""
+    if auth is None:
+        from .auth import read_cached_auth
+        auth = read_cached_auth()
+    oid, tenant = auth.get("oid"), auth.get("tenant")
+    if not isinstance(oid, str) or not oid or not isinstance(tenant, str) or not tenant:
+        return None
+    return hashlib.sha256((tenant + "\0" + oid).encode("utf-8")).hexdigest()
+
+
+def load_discovered_model_ids(
+    path: Optional[str] = None, account_key: Optional[str] = None
+) -> tuple[str, ...]:
     ids = list(BASELINE_MODEL_IDS)
     p = _capabilities_path(path)
+    bound_key = account_key or account_fingerprint()
     try:
         payload = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         payload = {}
-    values = payload.get("models") if isinstance(payload, dict) else None
+    values = (
+        payload.get("models")
+        if isinstance(payload, dict) and bound_key and payload.get("account") == bound_key
+        else None
+    )
     if isinstance(values, list):
         for value in values:
             if isinstance(value, str):
@@ -113,11 +136,27 @@ def load_discovered_model_ids(path: Optional[str] = None) -> tuple[str, ...]:
     return tuple(ids)
 
 
-def discovery_complete(path: Optional[str] = None) -> bool:
-    return _capabilities_path(path).exists()
+def discovery_complete(path: Optional[str] = None, account_key: Optional[str] = None) -> bool:
+    bound_key = account_key or account_fingerprint()
+    if not bound_key:
+        return False
+    try:
+        payload = json.loads(_capabilities_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("account") == bound_key
+        and isinstance(payload.get("models"), list)
+    )
 
 
-def save_discovered_models(values: Iterable[str], path: Optional[str] = None) -> tuple[str, ...]:
+def save_discovered_models(
+    values: Iterable[str], path: Optional[str] = None, account_key: Optional[str] = None
+) -> tuple[str, ...]:
+    bound_key = account_key or account_fingerprint()
+    if not bound_key:
+        raise ValueError("Sign in to the Copilot gateway before recording model discovery")
     found = []
     unknown = []
     for value in values:
@@ -131,21 +170,31 @@ def save_discovered_models(values: Iterable[str], path: Optional[str] = None) ->
         raise ValueError("Unsupported Copilot model label(s): " + ", ".join(unknown))
     p = _capabilities_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"models": found}, indent=2) + "\n", encoding="utf-8")
-    return load_discovered_model_ids(path)
+    p.write_text(
+        json.dumps({"account": bound_key, "models": found}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return load_discovered_model_ids(path, account_key=bound_key)
 
 
-def available_models(path: Optional[str] = None) -> list[ModelSpec]:
-    return [MODEL_CATALOG[model_id] for model_id in load_discovered_model_ids(path)]
+def available_models(
+    path: Optional[str] = None, account_key: Optional[str] = None
+) -> list[ModelSpec]:
+    return [
+        MODEL_CATALOG[model_id]
+        for model_id in load_discovered_model_ids(path, account_key=account_key)
+    ]
 
 
-def resolve_model(model: Optional[str], path: Optional[str] = None) -> ModelSpec:
+def resolve_model(
+    model: Optional[str], path: Optional[str] = None, account_key: Optional[str] = None
+) -> ModelSpec:
     model_id = normalize_model(model or "copilot")
-    allowed = set(load_discovered_model_ids(path))
+    allowed = set(load_discovered_model_ids(path, account_key=account_key))
     if not model_id or model_id not in allowed:
         raise ValueError(
             f"Copilot model {model!r} is not available for this signed-in account. "
-            f"Available: {', '.join(load_discovered_model_ids(path))}"
+            f"Available: {', '.join(load_discovered_model_ids(path, account_key=account_key))}"
         )
     return MODEL_CATALOG[model_id]
 

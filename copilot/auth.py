@@ -9,6 +9,7 @@ expired, and for the very first sign-in.
 
 import base64
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,9 +22,9 @@ from .protocol import (
 )
 
 # All session state (browser profile + cached auth) lives under one folder.
-SESSION_DIR = "session"
-DEFAULT_PROFILE_DIR = f"{SESSION_DIR}/profile"
-DEFAULT_AUTH_FILE = f"{SESSION_DIR}/token.json"
+SESSION_DIR = os.environ.get("COPILOT_SESSION_DIR", "session")
+DEFAULT_PROFILE_DIR = str(Path(SESSION_DIR) / "profile")
+DEFAULT_AUTH_FILE = str(Path(SESSION_DIR) / "token.json")
 # Chat access tokens live ~8h; this caps how long a cached one is trusted.
 AUTH_MAX_AGE = 7 * 60 * 60
 # Renew this long before the token's own expiry.

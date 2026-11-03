@@ -21,6 +21,8 @@ Recapture token shapes with ``tests/diagnostic.py`` if Microsoft changes them.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,6 +114,14 @@ class BrowserCopilot:
                 args=["--disable-blink-features=AutomationControlled"],
                 ignore_default_args=["--enable-automation"],
             )
+            channel = os.environ.get(
+                "COPILOT_BROWSER_CHANNEL",
+                "msedge" if sys.platform == "win32" else "",
+            )
+            if channel:
+                if channel not in ("chrome", "msedge", "chromium"):
+                    raise ValueError("Copilot browser channel must be chrome, msedge, or chromium")
+                launch_kwargs["channel"] = channel
             if self.proxy:
                 launch_kwargs["proxy"] = self._parse_proxy(self.proxy)
             self._context = self._pw.chromium.launch_persistent_context(
